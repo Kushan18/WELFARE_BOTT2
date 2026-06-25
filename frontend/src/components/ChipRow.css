@@ -1,0 +1,4 @@
+.chip-row { display:flex; flex-wrap:wrap; gap:8px; padding:4px 0 8px 40px; animation:fadeUp 0.2s ease; }
+.chip { background:var(--chip-bg); border:1px solid var(--chip-border); color:var(--accent); font-family:var(--font-main); font-size:13px; padding:6px 14px; border-radius:999px; cursor:pointer; transition:all 0.15s; white-space:nowrap; }
+.chip:hover:not(:disabled) { background:rgba(99,179,237,0.2); border-color:var(--accent); transform:translateY(-1px); }
+.chip:disabled { opacity:0.4; cursor:not-allowed; }
