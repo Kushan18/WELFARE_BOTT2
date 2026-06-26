@@ -49,7 +49,8 @@ conversations_collection = async_mongo_client["welfarebot"]["conversations"]
 from agent.graph import build_graph
 from chromadb import PersistentClient
 
-chroma_client = PersistentClient(path="./chroma_storage")
+# Unified ChromaDB location (the embedder and cached_retriever also use this path).
+chroma_client = PersistentClient(path="./chroma_db")
 
 welfare_graph = build_graph(groq_client, sync_users_collection, sync_schemes_collection)
 
@@ -64,10 +65,12 @@ scheduler.start()
 # FastAPI app instance
 app = FastAPI(title="WelfareBot Backend")
 
+# allow_origins=["*"] is incompatible with allow_credentials=True per the CORS
+# spec, so credentials are disabled while we accept any origin.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -81,8 +84,11 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+    chips: List[str] = Field(default_factory=list)
     show_form_choice: Optional[bool] = None
+    open_form: Optional[bool] = None
     clear_session: Optional[bool] = None
+    intent: Optional[str] = None
 
 
 class SubmitProfileRequest(BaseModel):
@@ -128,8 +134,19 @@ async def submit_profile(request: SubmitProfileRequest):
 
         from agent.eligibility import match_schemes
 
-        schemes = match_schemes(profile_dict, sync_schemes_collection)
-        return {"status": "success", "schemes": schemes[:5]}
+        schemes = match_schemes(profile_dict, sync_schemes_collection)[:8]
+        # Mark onboarding complete and remember the matched list so chat-based
+        # scheme selection works after the form path.
+        sync_users_collection.update_one(
+            {"session_id": request.session_id},
+            {"$set": {
+                "onboarding_step": "ready",
+                "last_schemes": [s.get("name") for s in schemes],
+                "selected_scheme": None,
+            }},
+        )
+        clean = [{k: v for k, v in s.items() if k != "_id"} for s in schemes]
+        return {"status": "success", "schemes": clean}
     except Exception as e:
         return {"error": str(e)}
 
@@ -141,65 +158,33 @@ async def chat(request: ChatRequest):
         message = request.message.strip()
 
         if not message:
-            return ChatResponse(reply="Please say something.")
+            return ChatResponse(reply="Please say something.", chips=["Start Over"])
 
-        # Determine onboarding flow
-        user_doc = sync_users_collection.find_one({"session_id": session_id}) or {}
-        onboarding_step = user_doc.get("onboarding_step", "name")
+        from agent.conversation import handle_turn
 
-        # ---- Onboarding flow ----
-        if onboarding_step == "name" and not user_doc.get("name"):
-            sync_users_collection.update_one(
-                {"session_id": session_id},
-                {"$set": {"name": message, "onboarding_step": "language"}},
-                upsert=True,
-            )
-            reply = f"Hello {message}, nice to meet you! Please select your preferred language.\nCHIPS:['English','हिंदी','తెలుగు','தமிழ்','ಕನ್ನಡ']"
-            return ChatResponse(reply=reply, show_form_choice=False, clear_session=False)
-
-        if onboarding_step == "language" and not user_doc.get("language_preference"):
-            sync_users_collection.update_one(
-                {"session_id": session_id},
-                {"$set": {"language_preference": message, "onboarding_step": "details"}},
-                upsert=True,
-            )
-            reply = "Great! Now we can continue. Would you like to fill a form or just chat?\nCHIPS:['📝 Fill Form','💬 Chat instead']"
-            return ChatResponse(reply=reply, show_form_choice=True, clear_session=False)
-
-        # Existing handling for other messages
-        state = {
-            "session_id": session_id,
-            "message": message,
-            "onboarding_step": onboarding_step,
-            "intent": None,
-            "reply": None,
-            "show_form_choice": None,
-            "clear_session": None,
-            "user_profile": user_doc,
-        }
-
-        result = welfare_graph.invoke(state)
-
-        reply = result.get("reply", "Sorry, couldn't process that.")
-        show_form_choice = result.get("show_form_choice", False)
-        clear_session = result.get("clear_session", False)
+        result = handle_turn(
+            session_id, message, sync_users_collection, sync_schemes_collection, welfare_graph
+        )
 
         await conversations_collection.insert_one({
             "session_id": session_id,
             "user_message": message,
-            "bot_reply": reply,
+            "bot_reply": result.get("reply"),
             "intent": result.get("intent"),
             "timestamp": datetime.utcnow(),
         })
 
         return ChatResponse(
-            reply=reply,
-            show_form_choice=show_form_choice,
-            clear_session=clear_session,
+            reply=result.get("reply", ""),
+            chips=result.get("chips", []),
+            show_form_choice=result.get("show_form_choice", False),
+            open_form=result.get("open_form", False),
+            clear_session=result.get("clear_session", False),
+            intent=result.get("intent"),
         )
     except Exception as e:
         logging.error(f"Chat endpoint error: {e}")
-        return ChatResponse(reply=f"Error: {str(e)}")
+        return ChatResponse(reply=f"Error: {str(e)}", chips=["Start Over"])
 
 
 # Startup diagnostics
@@ -218,16 +203,67 @@ print("=" * 50 + "\n")
 
 # -------------------- API ENDPOINTS --------------------
 
-# Existing staging endpoint
+# -------------------- Approval workflow --------------------
+# Scraped schemes land in `staging` with status "pending_approval" and are only
+# promoted to the live `schemes` collection after manual review here.
+class ApprovalRequest(BaseModel):
+    apply_link: str
+
+
+def _staging_to_live(doc: dict) -> dict:
+    """Map a raw staging document to the live scheme schema the matcher reads."""
+    rules = {}
+    state = (doc.get("state") or "all").strip().lower()
+    rules["state"] = state if state else "all"
+    return {
+        "name": doc.get("name"),
+        "description": doc.get("description", ""),
+        "eligibility_rules": rules,
+        "required_documents": doc.get("required_documents", []),
+        "apply_link": doc.get("apply_link", ""),
+        "deadline": doc.get("deadline", ""),
+        "category": doc.get("category", "general"),
+        "source": doc.get("source", ""),
+    }
+
+
 @app.get("/staging")
 async def get_staging():
-    client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv("MONGODB_URI"))
-    db = client.get_default_database()
-    cursor = db.staging.find({"status": "pending"}).sort("scraped_at", -1).limit(100)
-    return await cursor.to_list(length=100)
+    """List schemes awaiting approval."""
+    cursor = (
+        async_mongo_client["welfarebot"]["staging"]
+        .find({"status": "pending_approval"}, {"_id": 0})
+        .sort("scraped_at", -1)
+        .limit(100)
+    )
+    return {"pending": await cursor.to_list(length=100)}
 
 
-# RAG endpoint – simple semantic search over stored schemes
+@app.post("/staging/approve")
+async def approve_scheme(request: ApprovalRequest):
+    """Promote one pending scheme from staging to the live schemes collection."""
+    staging = sync_mongo_client["welfarebot"]["staging"]
+    doc = staging.find_one({"apply_link": request.apply_link})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Scheme not found in staging")
+    live = _staging_to_live(doc)
+    sync_schemes_collection.update_one({"name": live["name"]}, {"$set": live}, upsert=True)
+    staging.update_one({"apply_link": request.apply_link}, {"$set": {"status": "approved"}})
+    return {"status": "approved", "scheme": live["name"]}
+
+
+@app.post("/staging/reject")
+async def reject_scheme(request: ApprovalRequest):
+    staging = sync_mongo_client["welfarebot"]["staging"]
+    result = staging.update_one(
+        {"apply_link": request.apply_link}, {"$set": {"status": "rejected"}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Scheme not found in staging")
+    return {"status": "rejected"}
+
+
+# RAG endpoint - semantic search over stored schemes (ChromaDB)
 @app.post("/rag")
 async def rag_query(query: dict):
     """Accepts JSON {"question": "..."} and returns top matching scheme texts."""
@@ -236,11 +272,9 @@ async def rag_query(query: dict):
         raise HTTPException(status_code=400, detail="Question required")
 
     try:
-        # Use Groq to get embedding (placeholder: use text as is)
-        # For now, perform a naive text match against stored documents
-        docs = collection.get(ids=collection.get().ids)
-        # Very naive: return first 3 documents
-        return {"matches": docs['documents'][:3]}
+        from rag.cached_retriever import cached_retrieve
+        matches = cached_retrieve(question, n=3)
+        return {"matches": matches}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
