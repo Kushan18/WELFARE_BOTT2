@@ -277,7 +277,7 @@ def handle_faq(state: Dict[str, Any]) -> Dict[str, Any]:
 def handle_scheme_query(state: Dict[str, Any]) -> Dict[str, Any]:
     """Match schemes from the profile and present a tappable list."""
     session_id = state["session_id"]
-    user_doc = (users_collection.find_one({"session_id": session_id}) if users_collection else None) or {}
+    user_doc = (users_collection.find_one({"session_id": session_id}) if users_collection is not None else None) or {}
     try:
         from agent.eligibility import match_schemes
         schemes = match_schemes(user_doc, schemes_collection)[:8]
@@ -314,14 +314,14 @@ def handle_scheme_detail(state: Dict[str, Any]) -> Dict[str, Any]:
     """Show a scheme's detail, or answer Apply Now / Required Documents."""
     session_id = state["session_id"]
     message = (state.get("message") or "").strip().lower()
-    user_doc = (users_collection.find_one({"session_id": session_id}) if users_collection else None) or {}
+    user_doc = (users_collection.find_one({"session_id": session_id}) if users_collection is not None else None) or {}
     scheme_name = state.get("selected_scheme") or user_doc.get("selected_scheme")
 
     if not scheme_name:
         state["intent"] = "scheme_query"
         return handle_scheme_query(state)
 
-    scheme = schemes_collection.find_one({"name": scheme_name}, {"_id": 0}) if schemes_collection else None
+    scheme = schemes_collection.find_one({"name": scheme_name}, {"_id": 0}) if schemes_collection is not None else None
 
     # Persist current selection for follow-up chip actions.
     if users_collection is not None:
