@@ -6,22 +6,31 @@ import './Chat.css';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
+// Backward-compatible parser: backend now returns a `chips` array, but older
+// responses embedded chips inside the text as CHIPS:[...]. Support both.
 function parseChips(text) {
   const match = text.match(/CHIPS:\[([^\]]+)\]/);
   if (!match) return { clean: text, chips: [] };
   const clean = text.replace(/CHIPS:\[[^\]]+\]/, '').trim();
-  const chips = match[1].split(',').map(c => c.trim().replace(/^['\"']|['\"']\$/g, ''));
+  const chips = match[1]
+    .split(',')
+    .map(c => c.trim().replace(/^['"]|['"]$/g, ''));
   return { clean, chips };
 }
 
-const WELCOME = {
-  id: 'w', role: 'bot',
-  text: ?? Welcome to WelfareBot!\n\nI help Indian citizens discover government welfare schemes they are eligible for.\n\nTo get started, what is your name?,
-  chips: [], timestamp: new Date()
-};
+function welcomeMessage() {
+  return {
+    id: 'welcome',
+    role: 'bot',
+    text:
+      'Welcome to WelfareBot! We help Indian citizens discover government welfare schemes they may be eligible for.\n\nTo get started, what is your name?',
+    chips: ['Start Over'],
+    timestamp: new Date(),
+  };
+}
 
 export default function Chat({ sessionId, userName, onNameCapture, onOpenForm }) {
-  const [messages, setMessages] = useState([WELCOME]);
+  const [messages, setMessages] = useState([welcomeMessage()]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
@@ -29,15 +38,22 @@ export default function Chat({ sessionId, userName, onNameCapture, onOpenForm })
   const inputRef = useRef(null);
   const msgCount = useRef(1);
 
-  useEffect(() => { axios.get(API + '/health').then(() => setIsOnline(true)).catch(() => setIsOnline(false)); }, []);
+  useEffect(() => {
+    axios.get(API + '/health').then(() => setIsOnline(true)).catch(() => setIsOnline(false));
+  }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
 
   const addMsg = useCallback((role, text, chips = []) => {
     setMessages(prev => [...prev, { id: Date.now() + Math.random(), role, text, chips, timestamp: new Date() }]);
   }, []);
 
+  const resetChat = useCallback(() => {
+    setMessages([welcomeMessage()]);
+    msgCount.current = 1;
+  }, []);
+
   const sendMessage = useCallback(async (text) => {
-    const t = text.trim();
+    const t = (text || '').trim();
     if (!t || loading) return;
     addMsg('user', t);
     setInput('');
@@ -46,18 +62,35 @@ export default function Chat({ sessionId, userName, onNameCapture, onOpenForm })
     if (!userName && msgCount.current <= 2) onNameCapture(t);
     try {
       const res = await axios.post(API + '/chat', { session_id: sessionId, message: t }, { timeout: 30000 });
-      const { reply, show_form_choice } = res.data;
-      const { clean, chips } = parseChips(reply);
+      const { reply, chips: backendChips, show_form_choice, open_form, clear_session } = res.data;
+      const { clean, chips: parsedChips } = parseChips(reply || '');
+      const chips = (backendChips && backendChips.length) ? backendChips : parsedChips;
+      if (clear_session) {
+        resetChat();
+        if (clean) addMsg('bot', clean, chips);
+        return;
+      }
       addMsg('bot', clean, chips);
-      if (show_form_choice) onOpenForm(userName || t);
+      // Only open the form modal when the backend explicitly signals it
+      // (e.g. the user picked "Fill Form"), never automatically.
+      if (open_form) onOpenForm(userName || t);
+      else if (show_form_choice) { /* show choice as chips only; do not auto-open */ }
     } catch (err) {
-      const msg = err.code === 'ECONNABORTED' ? 'Request timed out - please try again.' : 'Something went wrong. Is the backend running?';
-      addMsg('bot', msg);
+      const msg = err.code === 'ECONNABORTED'
+        ? 'Request timed out - please try again.'
+        : 'Something went wrong. Is the backend running?';
+      addMsg('bot', msg, ['Start Over']);
     } finally {
       setLoading(false);
       inputRef.current?.focus();
     }
-  }, [loading, sessionId, userName, addMsg, onNameCapture, onOpenForm]);
+  }, [loading, sessionId, userName, addMsg, onNameCapture, onOpenForm, resetChat]);
+
+  const handleChipClick = useCallback((chip) => {
+    if (!chip) return;
+    if (chip === 'Fill Form' || chip.includes('Fill Form')) { onOpenForm(userName); return; }
+    sendMessage(chip);
+  }, [onOpenForm, userName, sendMessage]);
 
   const lastChips = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -70,10 +103,10 @@ export default function Chat({ sessionId, userName, onNameCapture, onOpenForm })
     <div className='chat-root'>
       <header className='chat-header'>
         <div className='chat-header-left'>
-          <div className='bot-avatar'>??</div>
+          <div className='bot-avatar'>WB</div>
           <div>
             <div className='bot-name'>WelfareBot</div>
-            <div className={ot-status \}>
+            <div className={`bot-status ${isOnline ? 'online' : 'offline'}`}>
               <span className='status-dot' />{isOnline ? 'Online' : 'Offline - start backend'}
             </div>
           </div>
@@ -84,7 +117,7 @@ export default function Chat({ sessionId, userName, onNameCapture, onOpenForm })
           <React.Fragment key={msg.id}>
             <MessageBubble message={msg} />
             {lastChips && lastChips.idx === idx && (
-              <ChipRow chips={lastChips.chips} onChipClick={(c) => { if (c.includes('Fill Form')) onOpenForm(userName); else sendMessage(c); }} disabled={loading} />
+              <ChipRow chips={lastChips.chips} onChipClick={handleChipClick} disabled={loading} />
             )}
           </React.Fragment>
         ))}

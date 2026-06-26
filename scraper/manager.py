@@ -26,8 +26,18 @@ def compute_quality_score(scheme: dict) -> int:
 def upsert_scheme(staging, scheme):
     if not scheme.get("apply_link"):
         return False
-    scheme_to_set = {k: v for k, v in scheme.items() if k != "_id"}
-    result = staging.update_one({"apply_link": scheme["apply_link"]}, {"$set": scheme_to_set}, upsert=True)
+    scheme_to_set = {k: v for k, v in scheme.items() if k != "_id" and k != "status"}
+    from datetime import datetime
+    result = staging.update_one(
+        {"apply_link": scheme["apply_link"]},
+        {
+            "$set": scheme_to_set,
+            # New schemes start as pending_approval and are only promoted to the
+            # live `schemes` collection after manual review.
+            "$setOnInsert": {"status": "pending_approval", "scraped_at": datetime.utcnow()},
+        },
+        upsert=True,
+    )
     return result.upserted_id is not None
 
 def run_scraper():

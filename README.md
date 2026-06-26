@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # WelfareBot Backend
 
 This is the backend service for WelfareBot built with FastAPI. It handles chat interactions and provides an API for the frontend client.
@@ -136,7 +135,3 @@ By default, the API will be available at [http://127.0.0.1:8000](http://127.0.0.
 Once the server is running, you can access the interactive API docs at:
 - Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - ReDoc: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-=======
-# WELFARE_BOT
-ITS USED TO HELP TO FIND GOVERNMENT SCHEME WHICH CAN BE CLAIMED BY PEOPLE 
->>>>>>> 10504b8a0541bfcf995d6991e4359dfd4e71a2d2

@@ -13,3 +13,18 @@ venv/
 .venv/
 env/
 ENV/
+
+# ChromaDB persistent storage
+chroma_db/
+chroma_storage/
+
+# Logs
+*.log
+logs/
+
+# Frontend
+frontend/node_modules/
+frontend/build/
+
+# Node
+node_modules/
