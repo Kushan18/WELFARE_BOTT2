@@ -3,6 +3,13 @@ import os
 import logging
 import traceback
 import asyncio
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"message": "WelfareBot API is running"}
 from datetime import datetime
 from dotenv import load_dotenv
 
