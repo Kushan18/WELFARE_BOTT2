@@ -12,3 +12,5 @@ chromadb
 sentence-transformers
 langgraph
 langchain
+groq
+motor
