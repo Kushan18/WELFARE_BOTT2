@@ -1,0 +1,12 @@
+{
+  "name": "welfare-bot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "echo \"Start script placeholder\"",
+    "build": "echo \"No build step needed\""
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}
