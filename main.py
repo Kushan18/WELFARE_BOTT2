@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # Groq client
 from groq import Groq
@@ -64,6 +66,10 @@ scheduler.start()
 # FastAPI app instance
 app = FastAPI(title="WelfareBot Backend")
 
+@app.get("/")
+async def root():
+    return {"message": "WelfareBot Backend is running"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -71,6 +77,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve React front‑end build
+app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
+
+# Fallback for any unknown route (SPA)
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_catchall(full_path: str):
+    return FileResponse("frontend/dist/index.html")
 
 
 # Request/Response models
